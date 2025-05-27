@@ -1,52 +1,127 @@
-# import osmnx as ox
+# main.py (actualizado): Proyecto: División de rutas para vendedores en una colonia
 
-# place = "Kamppi, Helsinki, Finland"
-# aoi = ox.geocoder.geocode_to_gdf(place)
-# aoi.explore()
-
-
-### -- obtengo las coordenadas
 import osmnx as ox
-# Opcional: mostrar mapa de la red
+import networkx as nx
+from networkx.algorithms.community import kernighan_lin_bisection
+import folium
+from shapely.geometry import shape, Polygon
+import json
+import os
+import re
+import geopandas as gpd
+import requests
 import matplotlib.pyplot as plt
-# Definir el área de interés
-place_name = "Privadas Diamante,General Escobedo, N.L., México "
+from shapely.geometry import Point
+from editor_launcher import launch_polygon_editor,shutdown_server
 
-# Descargar la red vial para vehículos (drive)
-G = ox.graph_from_place(place_name, network_type='drive')
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'\W+', '_', name.lower())
 
-# Número de calles = número de aristas en el grafo
-num_calles = G.number_of_edges()
+def download_bbox(place_name: str):
+    print(f"Descargando bounding box de {place_name}...")
 
-print(f"Número estimado de calles en {place_name}: {num_calles}")
+    cache_file = f"cache/{sanitize_filename(place_name)}.json"
+    os.makedirs("cache", exist_ok=True)
 
+    if os.path.exists(cache_file):
+        with open(cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            "q": place_name,
+            "format": "json",
+            "limit": 1,
+            "polygon_geojson": 1
+        }
+        headers = {"User-Agent": "mi-aplicacion-ceneval"}
+        response = requests.get(url, params=params, headers=headers)
+        if response.status_code != 200:
+            raise RuntimeError(f"Error en la petición: {response.status_code}")
+        data = response.json()
+        if not data:
+            raise RuntimeError(f"No se encontró '{place_name}' en Nominatim.")
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        print(f"Guardado en {cache_file}")
 
+    return cache_file
 
-fig, ax = ox.plot_graph(G, figsize=(10,10), node_size=10, edge_color='blue', edge_linewidth=1)
-plt.show()
+def split_graph(G):
+    print("Dividiendo grafo en dos zonas...")
+    part1, part2 = kernighan_lin_bisection(G)
+    return part1, part2
 
+def draw_partitioned_graph(G, part1, part2):
+    print("Dibujando el grafo con zonas en rojo y azul...")
+    color_map = ['red' if node in part1 else 'blue' for node in G.nodes()]
+    nx.draw(G, node_color=color_map, node_size=10, edge_color='gray', with_labels=False)
+    plt.show()
 
+def calcular_longitud_por_zona(G, part1, part2):
+    total_part1 = 0
+    total_part2 = 0
+    for u, v, data in G.edges(data=True):
+        length = data.get("length", 0)
+        if u in part1 and v in part1:
+            total_part1 += length
+        elif u in part2 and v in part2:
+            total_part2 += length
+    return total_part1, total_part2
 
-import osmnx as ox
-from shapely.geometry import Polygon
+def calcular_area_por_zona(G, part1, part2):
+    def area_de_particion(nodos):
+        puntos = [Point((G.nodes[n]['x'], G.nodes[n]['y'])) for n in nodos]
+        gdf = gpd.GeoDataFrame(geometry=puntos, crs="EPSG:4326")
+        gdf = gdf.to_crs(epsg=32614)  # UTM zona 14N
+        union_geom = gdf.geometry.union_all()
+        hull = union_geom.convex_hull
+        return hull.area / 1_000_000 if hull.area else 0
+    return area_de_particion(part1), area_de_particion(part2)
 
-# Define el polígono con las coordenadas (lat, lon)
-coords = [
-    (19.30, -99.08),
-    (19.30, -99.06),
-    (19.32, -99.06),
-    (19.32, -99.08),
-]
+def draw_graph_folium(G, part1, part2, place_name="colonia", output_html=None):
+    print("Generando mapa interactivo con folium...")
+    nombre_archivo = output_html or f"mapa_{sanitize_filename(place_name)}.html"
+    centro = list(G.nodes(data=True))[0][1]
+    m = folium.Map(location=[centro['y'], centro['x']], zoom_start=16)
+    for u, v, data in G.edges(data=True):
+        coords = [(pt[1], pt[0]) for pt in data['geometry'].coords] if 'geometry' in data else [
+            (G.nodes[u]['y'], G.nodes[u]['x']),
+            (G.nodes[v]['y'], G.nodes[v]['x'])
+        ]
+        color = 'red' if u in part1 and v in part1 else 'blue' if u in part2 and v in part2 else 'gray'
+        folium.PolyLine(coords, color=color, weight=3, opacity=0.7).add_to(m)
+    m.save(nombre_archivo)
+    print(f"🗺️ Mapa guardado en: {nombre_archivo}")
 
-# Crear objeto Polygon (nota que shapely usa (lon, lat))
-polygon = Polygon([(lon, lat) for lat, lon in coords])
+if __name__ == '__main__':
+    colonia = "San Lorenzo Tezonco, Ciudad de México"
+    cache_path = download_bbox(colonia)
+    ruta_poligono = launch_polygon_editor(colonia,cache_path)
+    shutdown_server()
+    with open(ruta_poligono, "r", encoding="utf-8") as f:
+        geojson = json.load(f)
+        geometry = shape(geojson["geometry"])
+        G = ox.graph_from_polygon(geometry, network_type='walk')
+        G = nx.Graph(G)
 
-# Descargar la red vial dentro del polígono
-G = ox.graph_from_polygon(polygon, network_type='drive')
-
-# Contar número de calles (aristas)
-num_calles = G.number_of_edges()
-print(f"Número estimado de calles en el área definida: {num_calles}")
-
-# Opcional: visualizar la red vial
-fig, ax = ox.plot_graph(G, figsize=(10,10), node_size=10, edge_color='blue', edge_linewidth=1)
+    part1, part2 = split_graph(G)
+    print(f"📊 Total de nodos: {len(G.nodes)}")
+    print(f"🔴 Zona 1 (vendedor A): {len(part1)} nodos")
+    print(f"🔵 Zona 2 (vendedor B): {len(part2)} nodos")
+    long1, long2 = calcular_longitud_por_zona(G, part1, part2)
+    print(f"🛣️ Longitud total zona 1 (rojo): {long1:.2f} m")
+    print(f"🛣️ Longitud total zona 2 (azul): {long2:.2f} m")
+    area1, area2 = calcular_area_por_zona(G, part1, part2)
+    print(f"📐 Área zona 1 (rojo): {area1:.2f} m²")
+    print(f"📐 Área zona 2 (azul): {area2:.2f} m²")
+    dens_nodos1 = len(part1) / area1
+    dens_nodos2 = len(part2) / area2
+    dens_calles1 = long1 / area1
+    dens_calles2 = long2 / area2
+    print(f"🔗 Densidad de nodos zona 1: {dens_nodos1:.2f} nodos/km²")
+    print(f"🔗 Densidad de nodos zona 2: {dens_nodos2:.2f} nodos/km²")
+    print(f"🚏 Densidad de calles zona 1: {dens_calles1:.2f} m/km²")
+    print(f"🚏 Densidad de calles zona 2: {dens_calles2:.2f} m/km²")
+    draw_partitioned_graph(G, part1, part2)
+    draw_graph_folium(G, part1, part2, place_name=colonia)
