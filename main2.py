@@ -81,7 +81,10 @@ def calcular_area_por_zona(G, part1, part2):
 
 def draw_graph_folium(G, part1, part2, place_name="colonia", output_html=None):
     print("Generando mapa interactivo con folium...")
-    nombre_archivo = output_html or f"mapa_{sanitize_filename(place_name)}.html"
+    output_folder = "mapas_division"
+       # Generar nombre de archivo limpio y ruta completa
+    filename = output_html or f"mapa_{sanitize_filename(place_name)}.html"
+    nombre_archivo = os.path.join(output_folder, filename)
     centro = list(G.nodes(data=True))[0][1]
     m = folium.Map(location=[centro['y'], centro['x']], zoom_start=16)
     for u, v, data in G.edges(data=True):

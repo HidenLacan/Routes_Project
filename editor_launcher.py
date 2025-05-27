@@ -81,11 +81,27 @@ def launch_polygon_editor(colonia_nombre: str, cache_path: str, timeout: int = 3
     </html>
     """
 
-    html_file = f"mapa_{nombre}.html"
-    with open(html_file, "w", encoding="utf-8") as f:
-        f.write(html_code)
+    
+    colonia_config = {
+        "bbox": bbox,
+        "center_lat": center_lat,
+        "center_lon": center_lon,
+        "nombre": nombre
+    }
+
 
     class Handler(SimpleHTTPRequestHandler):
+        
+        def do_GET(self):
+            if self.path == "/config":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(colonia_config).encode("utf-8"))
+            else:
+                super().do_GET()
+        
+        
         def do_POST(self):
             global httpd_reference
             if self.path == "/guardar":
@@ -105,7 +121,8 @@ def launch_polygon_editor(colonia_nombre: str, cache_path: str, timeout: int = 3
         global httpd_reference
         with TCPServer(("", 8000), Handler) as httpd:
             httpd_reference = httpd
-            webbrowser.open(f"http://localhost:8000/{html_file}")
+            webbrowser.open(f"http://localhost:8000/static/mapa.html")
+            print("🌐 Servidor iniciado en http://localhost:8000")
             httpd.serve_forever()
 
     thread = Thread(target=run_server)
